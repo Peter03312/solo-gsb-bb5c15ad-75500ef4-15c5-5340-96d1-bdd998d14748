@@ -17,6 +17,7 @@ ACTION_LABELS = {
     "save_draft": "保留冲突草稿",
     "resolve_draft": "草稿重试成功",
     "discard_draft": "丢弃草稿",
+    "reorder_layers": "整体调整发掘顺序",
 }
 
 
@@ -86,6 +87,23 @@ def replay_grid(conn, grid_id: int) -> dict:
         elif row["action"] == "save_draft":
             title = "保留冲突草稿：" + details.get("conflict_path", "")
             kind = "draft"
+        elif row["action"] == "reorder_layers":
+            # 旧帧（此前各事件）仍按旧顺序渲染；从本帧起所有层位使用新顺序
+            if row["success"]:
+                for chg in details.get("changes", []):
+                    lid, new_seq = chg.get("layer_id"), chg.get("new_seq")
+                    if lid is not None and new_seq is not None:
+                        seq_by_id[lid] = new_seq
+                        if lid in open_layers:
+                            open_layers[lid]["seq"] = new_seq
+                        if lid in closed_layers:
+                            closed_layers[lid]["seq"] = new_seq
+                title = row["summary"]
+                kind = "reorder"
+            else:
+                conflict = True
+                title = "拒绝整体调整：" + details.get("reason", "")
+                kind = "conflict"
         elif row["action"] == "create":
             title = row["summary"]
         else:

@@ -4,7 +4,10 @@
 冲突路径；遗物登记到已关闭层位直接拒绝（不补录）。
 """
 
+import hashlib
 import json
+import secrets
+import sqlite3
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -381,6 +384,275 @@ def list_batches_for_grid(conn, grid_id: int):
             ORDER BY b.created_at, b.id""",
         (grid_id,),
     ).fetchall()
+
+
+# ---------------------------------------------------------------- 层位发掘顺序整体调整
+
+
+def _relations_as_pairs(conn, grid_id: int) -> list[tuple[int, int]]:
+    return [
+        (r["upper_id"], r["lower_id"])
+        for r in conn.execute(
+            "SELECT upper_id, lower_id FROM layer_relations WHERE grid_id = ? ORDER BY id",
+            (grid_id,),
+        )
+    ]
+
+
+def grid_fingerprint(conn, grid_id: int) -> str:
+    """探方“层位 + 覆盖关系”状态指纹。
+
+    层位（id/code/seq/status）或覆盖关系集合发生任何变化，指纹都会不同，
+    用于判定顺序调整预览是否已过期。
+    """
+    layer_part = [
+        (r["id"], r["code"], r["seq"], r["status"])
+        for r in conn.execute(
+            "SELECT id, code, seq, status FROM layers WHERE grid_id = ? ORDER BY id",
+            (grid_id,),
+        )
+    ]
+    rel_part = _relations_as_pairs(conn, grid_id)
+    raw = json.dumps({"layers": layer_part, "relations": rel_part}, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _parse_new_order(conn, grid_id: int, new_order: dict) -> Result:
+    """校验用户输入的 {layer_id: 新顺序号}：
+
+    键必须恰好覆盖现存层位（不多不少）；值必须为互不重复的正整数。
+    成功时返回规整后的 {layer_id: new_seq:int}。
+    """
+    try:
+        raw = {int(k): v for k, v in dict(new_order).items()}
+    except (TypeError, ValueError):
+        return Result.failure("层位编号无法识别，请重新预览")
+
+    existing = list_layers(conn, grid_id)
+    ids = {row["id"] for row in existing}
+    submitted = set(raw)
+    if submitted != ids:
+        missing = sorted(
+            row["code"] for row in existing if row["id"] in ids - submitted
+        )
+        if missing:
+            return Result.failure("编号未覆盖全部现存层位，缺少：" + "、".join(missing))
+        return Result.failure("提交包含本探方之外或已不存在的层位编号")
+
+    parsed: dict[int, int] = {}
+    for lid, value in raw.items():
+        try:
+            new_seq = int(value)
+        except (TypeError, ValueError):
+            code = next(row["code"] for row in existing if row["id"] == lid)
+            return Result.failure(f"层位 {code} 的新顺序号必须是整数")
+        if new_seq <= 0:
+            code = next(row["code"] for row in existing if row["id"] == lid)
+            return Result.failure(f"层位 {code} 的新顺序号必须为正整数")
+        parsed[lid] = new_seq
+
+    if len(set(parsed.values())) != len(parsed):
+        return Result.failure("新顺序号必须互不重复")
+    return Result.success(**{"order": parsed})
+
+
+def _relation_impacts(layers: list, new_seq: dict[int, int], rel_pairs) -> tuple[list[dict], list[dict]]:
+    """按新顺序评估每条现存覆盖关系，返回 (全部受影响关系, 冲突关系)。
+
+    冲突：覆盖方新顺序号不小于被覆盖方（new_upper_seq >= new_lower_seq）。
+    """
+    code_map = {row["id"]: row["code"] for row in layers}
+    old_seq = {row["id"]: row["seq"] for row in layers}
+    affected, conflicts = [], []
+    for upper_id, lower_id in rel_pairs:
+        item = {
+            "upper_id": upper_id,
+            "lower_id": lower_id,
+            "upper_code": code_map[upper_id],
+            "lower_code": code_map[lower_id],
+            "upper_old": old_seq[upper_id],
+            "lower_old": old_seq[lower_id],
+            "upper_new": new_seq[upper_id],
+            "lower_new": new_seq[lower_id],
+            "moved": (
+                old_seq[upper_id] != new_seq[upper_id]
+                or old_seq[lower_id] != new_seq[lower_id]
+            ),
+        }
+        item["conflict"] = item["upper_new"] >= item["lower_new"]
+        affected.append(item)
+        if item["conflict"]:
+            conflicts.append(item)
+    return affected, conflicts
+
+
+def preview_reorder(conn, grid_id: int, new_order: dict, actor: str = "") -> Result:
+    """生成顺序调整预览：校验输入并按新顺序评估全部覆盖关系（不改动任何层位）。
+
+    预览保存为一次性凭据（token + 状态指纹）；同一探方旧预览自动失效。
+    存在冲突关系时仍生成预览（供查看冲突），但提交会被禁止。
+    """
+    grid = get_grid(conn, grid_id)
+    if grid is None:
+        return Result.failure("探方不存在")
+
+    parsed = _parse_new_order(conn, grid_id, new_order)
+    if not parsed.ok:
+        return parsed
+    new_seq = parsed.data["order"]
+
+    layers = list_layers(conn, grid_id)
+    rel_pairs = _relations_as_pairs(conn, grid_id)
+    affected, conflicts = _relation_impacts(layers, new_seq, rel_pairs)
+    changes = [
+        {
+            "layer_id": row["id"],
+            "code": row["code"],
+            "old_seq": row["seq"],
+            "new_seq": new_seq[row["id"]],
+            "status": row["status"],
+        }
+        for row in layers
+    ]
+
+    token = secrets.token_hex(16)
+    payload = json.dumps(
+        {"new_order": new_seq, "changes": changes, "relations": affected},
+        ensure_ascii=False,
+    )
+    ts = audit.now_ts()
+    # 同一探方只保留最新一份预览
+    conn.execute("DELETE FROM reorder_previews WHERE grid_id = ?", (grid_id,))
+    cur = conn.execute(
+        """INSERT INTO reorder_previews
+               (grid_id, token, fingerprint, payload, actor, created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (grid_id, token, grid_fingerprint(conn, grid_id), payload, actor.strip(), ts),
+    )
+    preview_id = cur.lastrowid
+    conn.commit()
+    return Result.success(
+        preview_id,
+        token=token,
+        changes=changes,
+        relations=affected,
+        conflicts=conflicts,
+    )
+
+
+def get_reorder_preview(conn, preview_id: int, token: str):
+    if not token:
+        return None
+    return conn.execute(
+        "SELECT * FROM reorder_previews WHERE id = ? AND token = ?",
+        (preview_id, token),
+    ).fetchone()
+
+
+def commit_reorder(conn, preview_id: int, token: str, actor: str = "") -> Result:
+    """凭预览一次性提交顺序调整（原子操作）。
+
+    预览必须存在、状态指纹仍与当前一致（层位/关系未变化）、提交的新顺序仍满足
+    覆盖关系约束。任一层位更新失败则整体回滚，不留部分更新。
+    """
+    preview = get_reorder_preview(conn, preview_id, token)
+    if preview is None:
+        return Result.failure("预览不存在或凭据无效，请重新预览")
+    grid_id = preview["grid_id"]
+    grid = get_grid(conn, grid_id)
+    if grid is None:
+        return Result.failure("探方不存在")
+
+    stale = preview["fingerprint"] != grid_fingerprint(conn, grid_id)
+
+    try:
+        payload = json.loads(preview["payload"])
+    except (ValueError, TypeError):
+        payload = {}
+    new_seq = {int(k): int(v) for k, v in payload.get("new_order", {}).items()}
+
+    if stale:
+        reason = "预览后层位或覆盖关系已发生变化，本次提交已拒绝，请重新预览"
+        audit.log(
+            conn, "reorder_layers", "grid", grid_id, grid_id, actor, False,
+            f"探方 {grid['code']} 顺序调整提交被拒绝：预览已过期",
+            {"reason": reason, "preview_id": preview_id}, commit=False,
+        )
+        conn.commit()
+        return Result.failure(reason)
+
+    # 提交时重新校验，不盲信预览快照
+    parsed = _parse_new_order(conn, grid_id, new_seq)
+    if not parsed.ok:
+        return parsed
+    new_seq = parsed.data["order"]
+    layers = list_layers(conn, grid_id)
+    _, conflicts = _relation_impacts(layers, new_seq, _relations_as_pairs(conn, grid_id))
+    if conflicts:
+        desc = "；".join(f"{c['upper_code']}→{c['lower_code']}" for c in conflicts)
+        reason = (
+            f"新顺序存在 {len(conflicts)} 处覆盖冲突（覆盖方顺序号不小于被覆盖方）：{desc}；"
+            "已禁止应用"
+        )
+        audit.log(
+            conn, "reorder_layers", "grid", grid_id, grid_id, actor, False,
+            f"探方 {grid['code']} 顺序调整提交被拒绝：覆盖冲突 {desc}",
+            {"reason": reason, "conflicts": conflicts, "preview_id": preview_id},
+            commit=False,
+        )
+        conn.commit()
+        return Result.failure(reason)
+
+    changes = [
+        {
+            "layer_id": row["id"],
+            "code": row["code"],
+            "old_seq": row["seq"],
+            "new_seq": new_seq[row["id"]],
+        }
+        for row in layers
+    ]
+    changed_count = sum(1 for c in changes if c["old_seq"] != c["new_seq"])
+    summary_changes = [
+        f"{c['code']}:{c['old_seq']}→{c['new_seq']}"
+        for c in changes if c["old_seq"] != c["new_seq"]
+    ]
+    summary = (
+        f"探方 {grid['code']} 整体调整层位发掘顺序（{changed_count} 个层位变更："
+        + ("，".join(summary_changes) if summary_changes else "顺序无变化") + "）"
+    )
+
+    ts = audit.now_ts()
+    try:
+        # 两阶段更新，规避 UNIQUE(grid_id, seq) 中途冲突：
+        # 1) 全部先置为互不相同的负临时值（同事务内不提交，外部不可见中间态）
+        for lid, target in new_seq.items():
+            conn.execute(
+                "UPDATE layers SET seq = ? WHERE id = ? AND grid_id = ?",
+                (-target, lid, grid_id),
+            )
+        # 2) 再统一置为最终顺序号
+        for lid, target in new_seq.items():
+            conn.execute("UPDATE layers SET seq = ? WHERE id = ?", (target, lid))
+        conn.execute("UPDATE grids SET updated_at = ? WHERE id = ?", (ts, grid_id))
+        audit.log(
+            conn, "reorder_layers", "grid", grid_id, grid_id, actor, True,
+            summary, {"changes": changes, "preview_id": preview_id}, commit=False,
+        )
+        # 一次性预览：提交成功后删除，防止重复使用
+        conn.execute("DELETE FROM reorder_previews WHERE id = ?", (preview_id,))
+        conn.commit()
+    except sqlite3.DatabaseError as exc:
+        # 任何中途失败都整体回滚，绝不留下部分更新
+        conn.rollback()
+        audit.log(
+            conn, "reorder_layers", "grid", grid_id, grid_id, actor, False,
+            f"探方 {grid['code']} 顺序调整失败并已整体回滚：{exc}",
+            {"preview_id": preview_id},
+        )
+        return Result.failure(f"顺序调整失败，已整体回滚，请重试：{exc}")
+
+    return Result.success(grid_id, changes=changes, changed_count=changed_count)
 
 
 # ---------------------------------------------------------------- 草稿

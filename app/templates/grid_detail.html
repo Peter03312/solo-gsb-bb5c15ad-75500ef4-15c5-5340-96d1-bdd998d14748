@@ -20,6 +20,38 @@
   {{ render_graph(graph, prefix='grid' ~ grid.id) }}
 </section>
 
+<section class="card">
+  <h2>整体调整发掘顺序</h2>
+  <p class="hint">田野整理时可一次性重排本探方<strong>全部现存层位</strong>（含已关闭层位，状态与遗物归属不变）。
+    先为每个层位填写<strong>互不重复的正整数</strong>新顺序号，提交后进入预览：核对新旧顺序与受影响的覆盖关系，
+    确认无冲突方可应用；预览后层位或覆盖关系若有变化，旧预览将被拒绝。</p>
+  {% if layers %}
+  <form class="form-stack" method="post" action="{{ url_for('routes.reorder_preview', grid_id=grid.id) }}">
+    <table class="table reorder-input">
+      <thead><tr><th>层位编号</th><th>当前顺序</th><th>状态</th><th>新顺序号（正整数，互不重复）</th></tr></thead>
+      <tbody>
+      {% for l in layers %}
+        <tr>
+          <td class="mono strong">{{ l.code }}</td>
+          <td>{{ l.seq }}</td>
+          <td>
+            {% if l.status == 'open' %}<span class="tag tag-open">开放</span>
+            {% else %}<span class="tag tag-closed">已关闭</span>{% endif %}
+          </td>
+          <td><input name="seq_{{ l.id }}" type="number" min="1" required value="{{ l.seq }}"
+                     style="max-width:140px"></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div class="btn-row">
+      <label style="max-width:200px">经办人 <input name="actor"></label>
+      <button class="btn" type="submit">预览调整（先看新旧顺序与覆盖关系）</button>
+    </div>
+  </form>
+  {% else %}<p class="empty">暂无层位，无法调整顺序。</p>{% endif %}
+</section>
+
 <div class="two-col">
 <section class="card">
   <h2>开放新层位</h2>

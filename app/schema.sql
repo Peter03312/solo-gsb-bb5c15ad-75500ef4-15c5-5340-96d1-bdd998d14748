@@ -60,6 +60,18 @@ CREATE TABLE IF NOT EXISTS drafts (
     created_at    TEXT    NOT NULL
 );
 
+-- 层位发掘顺序整体调整的预览（一次性令牌：提交后或被新版本取代后失效）
+-- fingerprint 为预览时刻“层位 + 覆盖关系”的状态指纹；提交时不一致即判定预览过期
+CREATE TABLE IF NOT EXISTS reorder_previews (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    grid_id     INTEGER NOT NULL REFERENCES grids(id) ON DELETE CASCADE,
+    token       TEXT    NOT NULL UNIQUE,          -- 提交凭据（随机、不可猜测）
+    fingerprint TEXT    NOT NULL,                 -- 预览时刻的状态指纹（SHA-256）
+    payload     TEXT    NOT NULL,                 -- JSON：new_order + 新旧顺序/关系快照
+    actor       TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL
+);
+
 -- 完整审计日志，回放与导出均以此为准
 CREATE TABLE IF NOT EXISTS audit_logs (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,3 +91,4 @@ CREATE INDEX IF NOT EXISTS idx_relations_grid     ON layer_relations(grid_id);
 CREATE INDEX IF NOT EXISTS idx_batches_layer      ON artifact_batches(layer_id);
 CREATE INDEX IF NOT EXISTS idx_audit_grid_ts      ON audit_logs(grid_id, ts);
 CREATE INDEX IF NOT EXISTS idx_audit_ts           ON audit_logs(ts);
+CREATE INDEX IF NOT EXISTS idx_reorder_grid       ON reorder_previews(grid_id);

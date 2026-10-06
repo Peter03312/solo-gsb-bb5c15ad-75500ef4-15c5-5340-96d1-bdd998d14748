@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}{{ grid.code }} 顺序调整预览 · 考古发掘层位记录系统{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <a class="back" href="{{ url_for('routes.grid_detail', grid_id=grid.id) }}">← 返回 {{ grid.code }} 层位图</a>
+    <h2>探方 {{ grid.code }} · 发掘顺序调整预览</h2>
+  </div>
+</div>
+
+{% if stale %}
+<div class="flash flash-error">
+  <strong>⛔ 预览已过期：</strong>预览生成后该探方的层位或覆盖关系发生了变化。
+  为避免覆盖新录入，本预览<strong>禁止提交</strong>，请返回工作台重新预览。
+</div>
+{% elif conflicts %}
+<div class="flash flash-error">
+  <strong>⛔ 存在 {{ conflicts|length }} 处覆盖冲突：</strong>
+  覆盖方（上层）的新顺序号不小于被覆盖方（下层）。请返回调整新顺序号后重新预览，当前预览禁止提交。
+</div>
+{% else %}
+<div class="flash flash-success">
+  <strong>✅ 校验通过：</strong>编号恰好覆盖全部现存层位，新顺序号为互不重复的正整数，
+  且所有覆盖关系仍满足“覆盖方先发掘”。确认后可一次性原子生效。
+</div>
+{% endif %}
+
+<section class="card">
+  <h2>新旧发掘顺序对照</h2>
+  <p class="hint">下表按<strong>新顺序号</strong>排列；已关闭层位参与调整，但其开放/关闭状态与遗物归属保持不变。</p>
+  <table class="table">
+    <thead><tr><th>新顺序</th><th>层位编号</th><th>原顺序</th><th>状态</th><th>变动</th></tr></thead>
+    <tbody>
+    {% for c in changes|sort(attribute='new_seq') %}
+      <tr class="{% if c.old_seq != c.new_seq %}row-bad{% endif %}">
+        <td class="strong">{{ c.new_seq }}</td>
+        <td class="mono strong">{{ c.code }}</td>
+        <td>{{ c.old_seq }}</td>
+        <td>
+          {% if c.status == 'open' %}<span class="tag tag-open">开放</span>
+          {% else %}<span class="tag tag-closed">已关闭</span>{% endif %}
+        </td>
+        <td>
+          {% if c.old_seq == c.new_seq %}<span class="muted">不变</span>
+          {% else %}<span class="tag tag-reorder">{{ c.old_seq }} → {{ c.new_seq }}</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>受影响的覆盖关系（{{ relations|length }}）</h2>
+  {% if relations %}
+  <table class="table">
+    <thead>
+      <tr><th>覆盖方（上层）</th><th></th><th>被覆盖方（下层）</th><th>原顺序校验</th><th>新顺序校验</th><th>状态</th></tr>
+    </thead>
+    <tbody>
+    {% for r in relations %}
+      <tr class="{% if r.conflict %}row-bad{% endif %}">
+        <td class="mono">{{ r.upper_code }}<br><small>{{ r.upper_old }} → <strong>{{ r.upper_new }}</strong></small></td>
+        <td>→ 覆盖 →</td>
+        <td class="mono">{{ r.lower_code }}<br><small>{{ r.lower_old }} → <strong>{{ r.lower_new }}</strong></small></td>
+        <td>
+          {% if r.upper_old < r.lower_old %}<span class="tag tag-open">合规</span>
+          {% else %}<span class="tag tag-closed">原已冲突</span>{% endif %}
+        </td>
+        <td>
+          {% if r.conflict %}
+            <span class="tag tag-danger">冲突：{{ r.upper_new }} ≥ {{ r.lower_new }}</span>
+          {% else %}
+            <span class="tag tag-open">合规：{{ r.upper_new }} &lt; {{ r.lower_new }}</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if r.conflict %}<span class="muted">禁止应用</span>
+          {% elif r.moved %}<span class="tag tag-reorder">顺序随动</span>
+          {% else %}<span class="muted">未受影响</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">本探方尚无覆盖关系，本次调整只改变发掘顺序。</p>{% endif %}
+</section>
+
+<section class="card">
+  <div class="btn-row">
+    <form method="post" action="{{ url_for('routes.reorder_commit', grid_id=grid.id, preview_id=preview.id) }}">
+      <input type="hidden" name="token" value="{{ preview.token }}">
+      <input type="hidden" name="actor" value="{{ preview.actor }}">
+      <button class="btn" type="submit"
+              {% if stale or conflicts %}disabled{% endif %}>
+        确认提交（一次性原子生效并记录变更前后顺序）
+      </button>
+    </form>
+    <a class="btn btn-ghost" href="{{ url_for('routes.grid_detail', grid_id=grid.id) }}">放弃，返回工作台</a>
+  </div>
+  <p class="muted" style="margin-top:10px">
+    凭据 #{{ preview.id }}，生成于 {{ preview.created_at }}（UTC）。提交后预览立即失效，不可重复使用；
+    若提交后层位或关系再变化，调整结果可在审计记录与回放中追溯。
+  </p>
+</section>
+{% endblock %}

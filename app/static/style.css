@@ -107,6 +107,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid #d7b98f; border-c
 .tag-open, .tag-edge { background: var(--open-bg); color: var(--open); }
 .tag-closed, .tag-close { background: var(--closed-bg); color: var(--closed); }
 .tag-draft, .tag-draft { background: var(--draft-bg); color: #3f4aa0; }
+.tag-reorder { background: #e7eef8; color: #234a78; }
+.tag-danger { background: var(--danger-bg); color: var(--danger); font-weight: 700; }
+.reorder-input td:last-child { width: 200px; }
 .badge { background: #efe7d8; color: #6d5f49; font-family: ui-monospace, monospace; }
 
 .flash-area { margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px; }

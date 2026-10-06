@@ -118,6 +118,95 @@ def close_layer(layer_id: int):
     )
 
 
+# ---------------------------------------------------------------- 层位顺序整体调整
+
+def _parse_reorder_form() -> dict:
+    """从表单收集 {layer_id: 新顺序号}（仅取 seq_<id> 字段，值留空则忽略）。"""
+    new_order: dict[int, str] = {}
+    for key, value in request.form.items():
+        if key.startswith("seq_"):
+            try:
+                new_order[int(key[4:])] = value
+            except ValueError:
+                continue
+    return new_order
+
+
+@bp.post("/grids/<int:grid_id>/reorder/preview")
+def reorder_preview(grid_id):
+    conn = db.get_db()
+    result = services.preview_reorder(conn, grid_id, _parse_reorder_form(), _actor())
+    if not result.ok:
+        flash(result.error, "error")
+        return redirect(url_for("routes.grid_detail", grid_id=grid_id))
+    conflicts = result.data.get("conflicts", [])
+    if conflicts:
+        flash(
+            f"预览已生成：存在 {len(conflicts)} 处覆盖冲突，禁止提交，请调整后重新预览。",
+            "error",
+        )
+    else:
+        flash("预览已生成：确认无误后凭此预览一次性提交。", "success")
+    return redirect(
+        url_for(
+            "routes.reorder_preview_page",
+            grid_id=grid_id,
+            preview_id=result.id,
+            token=result.data["token"],
+        )
+    )
+
+
+@bp.route("/grids/<int:grid_id>/reorder/<int:preview_id>")
+def reorder_preview_page(grid_id, preview_id):
+    conn = db.get_db()
+    token = request.args.get("token", "")
+    preview = services.get_reorder_preview(conn, preview_id, token)
+    if preview is None or preview["grid_id"] != grid_id:
+        flash("预览不存在、链接不完整或已被提交/取代，请重新发起调整。", "error")
+        return redirect(url_for("routes.grid_detail", grid_id=grid_id))
+
+    grid = services.get_grid(conn, grid_id)
+    try:
+        payload = json.loads(preview["payload"])
+    except (ValueError, TypeError):
+        payload = {}
+    changes = payload.get("changes", [])
+    relations = payload.get("relations", [])
+    conflicts = [r for r in relations if r.get("conflict")]
+    stale = preview["fingerprint"] != services.grid_fingerprint(conn, grid_id)
+
+    return render_template(
+        "reorder_preview.html",
+        grid=grid,
+        preview=preview,
+        changes=changes,
+        relations=relations,
+        conflicts=conflicts,
+        stale=stale,
+    )
+
+
+@bp.post("/grids/<int:grid_id>/reorder/<int:preview_id>/commit")
+def reorder_commit(grid_id, preview_id):
+    conn = db.get_db()
+    token = request.form.get("token", "")
+    result = services.commit_reorder(conn, preview_id, token, _actor())
+    if result.ok:
+        changed = result.data.get("changed_count", 0)
+        flash(f"发掘顺序已整体生效（{changed} 个层位顺序变更，一次性原子提交）。", "success")
+        return redirect(url_for("routes.grid_detail", grid_id=grid_id))
+    flash(result.error, "error")
+    if services.get_reorder_preview(conn, preview_id, token) is not None:
+        return redirect(
+            url_for(
+                "routes.reorder_preview_page",
+                grid_id=grid_id, preview_id=preview_id, token=token,
+            )
+        )
+    return redirect(url_for("routes.grid_detail", grid_id=grid_id))
+
+
 # ---------------------------------------------------------------- 覆盖关系
 
 @bp.post("/grids/<int:grid_id>/relations")
@@ -282,6 +371,7 @@ def audit_view():
         ("save_draft", "保留草稿"),
         ("resolve_draft", "草稿重试"),
         ("discard_draft", "丢弃草稿"),
+        ("reorder_layers", "整体调整顺序"),
     ]
     return render_template(
         "audit.html", logs=logs, grids=grids, actions=actions,
