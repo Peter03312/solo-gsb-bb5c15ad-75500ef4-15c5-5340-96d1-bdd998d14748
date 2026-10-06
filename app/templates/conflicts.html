@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}冲突草稿 · 考古发掘层位记录系统{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h2>冲突草稿</h2>
+</div>
+<p class="hint">违反发掘顺序或会导致层位图成环的录入不会被写入，系统保留原始内容为草稿，
+并展示冲突路径。可在矛盾解除（例如补建了正确的顺序关系、或修正顺序号）后重试。</p>
+
+{% if drafts %}
+<div class="draft-list">
+{% for d in drafts %}
+<section class="card draft {% if d.id == highlight %}highlight{% endif %}" id="draft-{{ d.id }}">
+  <div class="draft-head">
+    <h3>草稿 #{{ d.id }} · {{ d.payload_obj.kind_label or '关系录入' }}</h3>
+    <span class="tag tag-draft">{{ d.kind }} · 探方 {{ d.grid_code or ('#' ~ d.grid_id) }}</span>
+  </div>
+
+  <div class="conflict-box">
+    <div class="conflict-title">检测到的冲突路径：</div>
+    <div class="conflict-path">{{ d.conflict_path or '—' }}</div>
+    <div class="conflict-reason">{{ d.reason }}</div>
+  </div>
+
+  {% if d.kind == 'relation' and layers_by_grid.get(d.grid_id) %}
+  {% set p = d.payload_obj %}
+  <form class="form-stack" method="post" action="{{ url_for('routes.retry_draft', draft_id=d.id) }}">
+    <div class="row2">
+      <label>覆盖方（上层）
+        <select name="_upper_disabled" disabled>
+          {% for l in layers_by_grid[d.grid_id] %}
+          <option value="{{ l.id }}" {% if l.id == p.upper_id %}selected{% endif %}>
+            {{ l.code }}（顺序 {{ l.seq }}，{{ l.status }}）
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>被覆盖方（下层）
+        <select name="_lower_disabled" disabled>
+          {% for l in layers_by_grid[d.grid_id] %}
+          <option value="{{ l.id }}" {% if l.id == p.lower_id %}selected{% endif %}>
+            {{ l.code }}（顺序 {{ l.seq }}，{{ l.status }}）
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <p class="muted">原说明：{{ p.note or '—' }} · 原经办人：{{ p.actor or '—' }} · 保留时间 {{ d.created_at }}</p>
+    <div class="btn-row">
+      <button class="btn" type="submit">重新校验并提交</button>
+      <button class="btn btn-ghost" type="submit"
+              formaction="{{ url_for('routes.discard_draft', draft_id=d.id) }}"
+              formmethod="post"
+              onclick="return confirm('确认丢弃草稿 #{{ d.id }}？审计仍会保留该操作。')">
+        丢弃草稿
+      </button>
+    </div>
+  </form>
+  {% else %}
+  <pre class="payload">{{ d.payload }}</pre>
+  {% endif %}
+</section>
+{% endfor %}
+</div>
+{% else %}
+<section class="card"><p class="empty">当前没有冲突草稿，层位图状态一致。</p></section>
+{% endif %}
+{% endblock %}

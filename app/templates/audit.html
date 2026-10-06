@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}审计记录 · 考古发掘层位记录系统{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h2>审计记录</h2>
+  <a class="btn" href="{{ url_for('routes.audit_export', **request.args) }}">⬇ 导出 CSV（当前筛选结果）</a>
+</div>
+
+<section class="card">
+  <form class="form-grid filter-form" method="get">
+    <label>探方
+      <select name="grid_id">
+        <option value="">全部</option>
+        {% for g in grids %}
+        <option value="{{ g.id }}" {% if f_grid_id == g.id %}selected{% endif %}>{{ g.code }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>操作类型
+      <select name="action">
+        <option value="">全部</option>
+        {% for value, label in actions %}
+        <option value="{{ value }}" {% if f_action == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>关键词 <input name="q" value="{{ f_q }}" placeholder="摘要/详情关键词"></label>
+    <label class="checkbox">
+      <input type="checkbox" name="only_errors" value="1" {% if f_only_errors %}checked{% endif %}>
+      仅看被拒绝/冲突
+    </label>
+    <div class="filter-actions">
+      <button class="btn" type="submit">筛选</button>
+      <a class="btn btn-ghost" href="{{ url_for('routes.audit_view') }}">重置</a>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+{% if logs %}
+<table class="table audit-table">
+  <thead><tr>
+    <th>ID</th><th>时间(UTC)</th><th>操作</th><th>对象</th><th>探方</th>
+    <th>结果</th><th>经办人</th><th>摘要</th><th>详情</th>
+  </tr></thead>
+  <tbody>
+  {% for r in logs %}
+  <tr class="{% if not r.success %}row-bad{% endif %}">
+    <td class="mono">{{ r.id }}</td>
+    <td class="ts">{{ r.ts }}</td>
+    <td><span class="badge badge-{{ r.action }}">{{ r.action }}</span></td>
+    <td>{{ r.entity }}{% if r.entity_id %} #{{ r.entity_id }}{% endif %}</td>
+    <td class="mono">{{ r.grid_code or '—' }}</td>
+    <td>
+      {% if r.success %}<span class="tag tag-open">成功</span>
+      {% else %}<span class="tag tag-closed">拒绝/冲突</span>{% endif %}
+    </td>
+    <td>{{ r.actor or '—' }}</td>
+    <td>{{ r.summary }}</td>
+    <td><details><summary>详情</summary><pre class="payload">{{ r.details }}</pre></details></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">没有符合条件的审计记录。</p>
+{% endif %}
+</section>
+{% endblock %}

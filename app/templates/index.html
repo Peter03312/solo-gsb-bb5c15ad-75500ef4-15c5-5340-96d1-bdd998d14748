@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}探方总览 · 考古发掘层位记录系统{% endblock %}
+{% block content %}
+<div class="stats">
+  <div class="stat"><span class="stat-num">{{ grids|length }}</span><span class="stat-label">探方</span></div>
+  <div class="stat"><span class="stat-num">{{ open_count }}</span><span class="stat-label">开放层位</span></div>
+  <div class="stat stat-warn"><span class="stat-num">{{ draft_count }}</span><span class="stat-label">冲突草稿</span></div>
+</div>
+
+<section class="card">
+  <h2>新建探方</h2>
+  <form class="form-grid" method="post" action="{{ url_for('routes.create_grid') }}">
+    <label>探方编号 <input name="code" required placeholder="如 T01"></label>
+    <label>遗址名称 <input name="site" placeholder="如 半坡遗址"></label>
+    <label>经办人 <input name="actor" placeholder="记录员姓名（可留空）"></label>
+    <label class="span2">备注 <input name="note" placeholder="探方位置、坐标等"></label>
+    <div class="span2"><button class="btn" type="submit">创建探方</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>探方列表</h2>
+  {% if grids %}
+  <table class="table">
+    <thead><tr><th>编号</th><th>遗址</th><th>层位数</th><th>遗物批次</th><th>备注</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for g in grids %}
+      <tr>
+        <td class="mono strong">{{ g.code }}</td>
+        <td>{{ g.site or '—' }}</td>
+        <td>{{ g.layer_count }}</td>
+        <td>{{ g.batch_count }}</td>
+        <td>{{ g.note or '—' }}</td>
+        <td>
+          <a class="btn btn-sm" href="{{ url_for('routes.grid_detail', grid_id=g.id) }}">层位图</a>
+          <a class="btn btn-sm btn-ghost" href="{{ url_for('routes.replay', grid_id=g.id) }}">回放</a>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">还没有探方，请先创建。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>最近操作</h2>
+  {% if recent %}
+  <ul class="timeline-mini">
+    {% for r in recent %}
+    <li class="{% if not r.success %}bad{% endif %}">
+      <span class="ts">{{ r.ts }}</span>
+      <span class="badge badge-{{ r.action }}">{{ r.action }}</span>
+      {{ r.summary }}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">暂无操作记录。</p>
+  {% endif %}
+</section>
+{% endblock %}

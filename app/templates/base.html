@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}考古发掘层位记录系统{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">⛏ 考古发掘层位记录系统</div>
+  <nav>
+    <a href="{{ url_for('routes.index') }}">探方总览</a>
+    <a href="{{ url_for('routes.conflicts') }}">冲突草稿</a>
+    <a href="{{ url_for('routes.audit_view') }}">审计记录</a>
+  </nav>
+</header>
+
+<main class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-area">
+        {% for category, message in messages %}
+          <div class="flash flash-{{ category }}">
+            <strong>
+              {% if category == 'error' %}⛔ 冲突{% elif category == 'success' %}✅{% else %}ℹ️{% endif %}
+            </strong>
+            {{ message }}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="footer">
+  层位图为有向无环图（DAG）：上层覆盖下层，覆盖方发掘顺序号必须更小 · 所有写入均留痕
+</footer>
+</body>
+</html>

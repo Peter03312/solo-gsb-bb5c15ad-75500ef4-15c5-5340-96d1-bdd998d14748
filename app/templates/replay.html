@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% from "_graph.html" import render_graph %}
+{% block title %}{{ grid.code }} 回放 · 考古发掘层位记录系统{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <a class="back" href="{{ url_for('routes.grid_detail', grid_id=grid.id) }}">← 返回 {{ grid.code }} 层位图</a>
+    <h2>探方 {{ grid.code }} · 层位演变回放</h2>
+  </div>
+</div>
+
+{% if total == 0 %}
+<section class="card"><p class="empty">该探方暂无任何事件可回放。</p></section>
+{% else %}
+<section class="card">
+  <div class="replay-controls">
+    {% if step > 1 %}
+    <a class="btn btn-sm" href="?step={{ step - 1 }}">← 上一步</a>
+    {% else %}<button class="btn btn-sm" disabled>← 上一步</button>{% endif %}
+    <span class="replay-step">第 {{ step }} / {{ total }} 步</span>
+    {% if step < total %}
+    <a class="btn btn-sm" href="?step={{ step + 1 }}">下一步 →</a>
+    {% else %}<button class="btn btn-sm" disabled>下一步 →</button>{% endif %}
+    <span class="replay-jump">
+      跳至
+      {% for s in [1, total // 2, total]|unique %}
+        <a href="?step={{ s }}">{{ s }}</a>{% if not loop.last %} · {% endif %}
+      {% endfor %}
+      <a href="?step={{ total }}">（最新）</a>
+    </span>
+  </div>
+
+  {% if current %}
+  <div class="replay-current event-{{ current.kind }} {% if current.conflict %}event-conflict{% endif %}">
+    <span class="ts">{{ current.ts }}</span>
+    <span class="tag tag-{{ current.kind }}">{{ current.label }}</span>
+    <strong>{{ current.title }}</strong>
+    {% if current.actor %}<span class="muted">经办人：{{ current.actor }}</span>{% endif %}
+    {% if current.conflict %}
+    <div class="conflict-box">
+      <div class="conflict-title">冲突路径：</div>
+      <div class="conflict-path">{{ current.conflict_path }}</div>
+      <div class="conflict-reason">{{ current.reason }}</div>
+      <div class="muted">该事件被拒绝，层位图状态不变，内容已保留为草稿。</div>
+    </div>
+    {% endif %}
+    <div class="snap">
+      快照：开放层位 {{ current.open_count }} · 已关闭 {{ current.closed_count }} · 覆盖关系 {{ current.edge_count }}
+    </div>
+  </div>
+  {{ render_graph(current.graph, prefix='replay') }}
+</section>
+
+<section class="card">
+  <h2>完整时间线</h2>
+  <ol class="timeline">
+  {% for e in events %}
+    <li class="tl-item event-{{ e.kind }} {% if e.conflict %}bad{% endif %} {% if loop.index == step %}current{% endif %}">
+      <a href="?step={{ loop.index }}">
+        <span class="tl-step">{{ loop.index }}</span>
+        <span class="ts">{{ e.ts }}</span>
+        <span class="tag tag-{{ e.kind }}">{{ e.label }}</span>
+        <span>{{ e.title }}</span>
+      </a>
+    </li>
+  {% endfor %}
+  </ol>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

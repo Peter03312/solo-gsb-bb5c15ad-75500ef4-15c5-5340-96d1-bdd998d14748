@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% from "_graph.html" import render_graph %}
+{% block title %}{{ grid.code }} 层位图 · 考古发掘层位记录系统{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <a class="back" href="{{ url_for('routes.index') }}">← 返回探方总览</a>
+    <h2>探方 {{ grid.code }} <small>{{ grid.site }}</small></h2>
+  </div>
+  <div class="actions">
+    <a class="btn btn-ghost" href="{{ url_for('routes.replay', grid_id=grid.id) }}">▶ 按发掘顺序回放</a>
+    <a class="btn btn-ghost" href="{{ url_for('routes.audit_view', grid_id=grid.id) }}">本探方审计</a>
+  </div>
+</div>
+
+<section class="card">
+  <h2>层位图（覆盖 / 被覆盖）</h2>
+  <p class="hint">箭头由<strong>覆盖方（先发掘，顺序号小）</strong>指向<strong>被覆盖方（后发掘，顺序号大）</strong>。
+    灰色节点为已关闭层位。新增关系若成环或违反发掘顺序，将保留为冲突草稿。</p>
+  {{ render_graph(graph, prefix='grid' ~ grid.id) }}
+</section>
+
+<div class="two-col">
+<section class="card">
+  <h2>开放新层位</h2>
+  <form class="form-stack" method="post" action="{{ url_for('routes.create_layer', grid_id=grid.id) }}">
+    <div class="row2">
+      <label>层位编号 <input name="code" required placeholder="如 L3"></label>
+      <label>发掘顺序 <input name="seq" type="number" min="1" required placeholder="1 最先发掘"></label>
+    </div>
+    <div class="row2">
+      <label>名称/土质 <input name="name" placeholder="如 灰褐土"></label>
+      <label>年代归属 <input name="period" placeholder="如 仰韶文化晚期"></label>
+    </div>
+    <label>描述 <textarea name="description" rows="2"></textarea></label>
+    <label>经办人 <input name="actor" placeholder="记录员姓名（可留空）"></label>
+    <button class="btn" type="submit">开放层位</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>登记覆盖关系</h2>
+  <form class="form-stack" method="post" action="{{ url_for('routes.add_relation', grid_id=grid.id) }}">
+    {% if layers|length >= 2 %}
+    <div class="row2">
+      <label>覆盖方（上层，先发掘）
+        <select name="upper_id" required>
+          {% for l in layers %}<option value="{{ l.id }}">{{ l.code }}（顺序 {{ l.seq }}）</option>{% endfor %}
+        </select>
+      </label>
+      <label>被覆盖方（下层，后发掘）
+        <select name="lower_id" required>
+          {% for l in layers %}<option value="{{ l.id }}">{{ l.code }}（顺序 {{ l.seq }}）</option>{% endfor %}
+        </select>
+      </label>
+    </div>
+    <label>关系说明 <input name="note" placeholder="如 直接压覆"></label>
+    <label>经办人 <input name="actor"></label>
+    <button class="btn" type="submit">建立关系（校验无环与顺序）</button>
+    {% else %}
+    <p class="empty">至少需要两个层位才能登记覆盖关系。</p>
+    {% endif %}
+  </form>
+</section>
+</div>
+
+<div class="two-col">
+<section class="card">
+  <h2>层位清单</h2>
+  {% if layers %}
+  <table class="table">
+    <thead><tr><th>编号</th><th>顺序</th><th>名称</th><th>年代</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for l in layers %}
+      <tr>
+        <td class="mono strong">{{ l.code }}</td>
+        <td>{{ l.seq }}</td>
+        <td>{{ l.name or '—' }}</td>
+        <td>{{ l.period or '—' }}</td>
+        <td>
+          {% if l.status == 'open' %}<span class="tag tag-open">开放</span>
+          {% else %}<span class="tag tag-closed">已关闭 {{ l.closed_at[:10] if l.closed_at }}</span>{% endif %}
+        </td>
+        <td>
+          {% if l.status == 'open' %}
+          <form method="post" action="{{ url_for('routes.close_layer', layer_id=l.id) }}"
+                onsubmit="return confirm('关闭层位 {{ l.code }}？关闭后将无法补录任何遗物。')">
+            <input type="hidden" name="actor">
+            <button class="btn btn-sm btn-warn" type="submit">关闭层位</button>
+          </form>
+          {% else %}<span class="muted">禁止补录</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">暂无层位。</p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>登记遗物批次</h2>
+  {% if open_layers %}
+  <form class="form-stack" method="post" action="{{ url_for('routes.register_artifact') }}">
+    <label>归属层位（仅限当前开放层位）
+      <select name="layer_id" required>
+        {% for l in open_layers %}<option value="{{ l.id }}">{{ l.code }}（顺序 {{ l.seq }}）</option>{% endfor %}
+      </select>
+    </label>
+    <div class="row2">
+      <label>遗物类别
+        <select name="category" required>
+          {% for c in artifact_categories %}<option>{{ c }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>数量 <input name="count" type="number" min="0" value="1" required></label>
+    </div>
+    <label>描述 <textarea name="description" rows="2"></textarea></label>
+    <label>经办人 <input name="actor"></label>
+    <button class="btn" type="submit">登记批次</button>
+  </form>
+  {% else %}
+  <p class="empty">没有开放层位。已关闭层位不能补录遗物，请先开放新层位。</p>
+  {% endif %}
+</section>
+</div>
+
+<section class="card">
+  <h2>覆盖关系与遗物批次</h2>
+  <h3>覆盖关系（{{ relations|length }}）</h3>
+  {% if relations %}
+  <table class="table">
+    <thead><tr><th>覆盖方</th><th></th><th>被覆盖方</th><th>顺序校验</th><th>说明</th><th>登记时间(UTC)</th></tr></thead>
+    <tbody>
+    {% for r in relations %}
+      <tr>
+        <td class="mono">{{ r.upper_code }}<br><small>顺序 {{ r.upper_seq }}</small></td>
+        <td>→ 覆盖 →</td>
+        <td class="mono">{{ r.lower_code }}<br><small>顺序 {{ r.lower_seq }}</small></td>
+        <td>{% if r.upper_seq < r.lower_seq %}<span class="tag tag-open">合规</span>{% endif %}</td>
+        <td>{{ r.note or '—' }}</td>
+        <td class="ts">{{ r.created_at }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">尚未登记覆盖关系。</p>{% endif %}
+
+  <h3>遗物批次（{{ batches|length }}）</h3>
+  {% if batches %}
+  <table class="table">
+    <thead><tr><th>批次号</th><th>归属层位</th><th>类别</th><th>数量</th><th>描述</th><th>经办人</th><th>登记时间(UTC)</th></tr></thead>
+    <tbody>
+    {% for b in batches %}
+      <tr>
+        <td class="mono strong">{{ b.batch_no }}</td>
+        <td class="mono">{{ b.layer_code }}
+          {% if b.layer_status == 'closed' %}<span class="tag tag-closed">层位后关闭</span>{% endif %}</td>
+        <td>{{ b.category }}</td>
+        <td>{{ b.count }}</td>
+        <td>{{ b.description or '—' }}</td>
+        <td>{{ b.recorded_by or '—' }}</td>
+        <td class="ts">{{ b.created_at }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">尚无遗物批次。</p>{% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,36 @@
+{# 渲染层位图（DAG）为内联 SVG。graph 由 app.graph.build_graph 生成 #}
+{% macro render_graph(graph, prefix='g') %}
+{% set nw = 110 %}{% set nh = 46 %}
+{% if graph.nodes %}
+<svg class="layer-graph" viewBox="0 0 {{ graph.width }} {{ graph.height }}"
+     width="{{ graph.width }}" height="{{ graph.height }}" role="img" aria-label="层位图">
+  <defs>
+    <marker id="{{ prefix }}-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#8a5a2b"></path>
+    </marker>
+  </defs>
+
+  {% for e in graph.edges %}
+  <line class="edge" x1="{{ e.x1 }}" y1="{{ e.y1 }}" x2="{{ e.x2 }}" y2="{{ e.y2 }}"
+        marker-end="url(#{{ prefix }}-arrow)"></line>
+  {% endfor %}
+
+  {% for n in graph.nodes %}
+  {% if n.status == 'closed' %}
+  <rect class="node node-closed" x="{{ n.x - nw/2 }}" y="{{ n.y - nh/2 }}"
+        width="{{ nw }}" height="{{ nh }}" rx="6"></rect>
+  {% else %}
+  <rect class="node node-open" x="{{ n.x - nw/2 }}" y="{{ n.y - nh/2 }}"
+        width="{{ nw }}" height="{{ nh }}" rx="6"></rect>
+  {% endif %}
+  <text class="node-code" x="{{ n.x }}" y="{{ n.y - 4 }}">{{ n.code }}</text>
+  <text class="node-seq" x="{{ n.x }}" y="{{ n.y + 14 }}">
+    顺序 {{ n.seq }}{% if n.status == 'closed' %} · 已关闭{% else %} · 开放{% endif %}
+  </text>
+  {% endfor %}
+</svg>
+{% else %}
+<p class="empty">尚无层位，开放第一个层位后将在此生成层位图。</p>
+{% endif %}
+{% endmacro %}
