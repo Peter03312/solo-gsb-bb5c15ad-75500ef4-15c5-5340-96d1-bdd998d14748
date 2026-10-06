@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}{{ grid.code }} 顺序调整预览 · 考古发掘层位记录系统{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <a class="back" href="{{ url_for('routes.reorder_layers_form', grid_id=grid.id) }}">← 返回修改顺序号</a>
+    <h2>探方 {{ grid.code }} <small>顺序调整预览（第二步）</small></h2>
+  </div>
+</div>
+
+{% if error %}
+<section class="card">
+  <h2>发现冲突，禁止应用</h2>
+  <div class="conflict-box">
+    <div class="conflict-title">{{ error }}</div>
+    {% if conflict_path %}<div class="conflict-path">{{ conflict_path }}</div>{% endif %}
+  </div>
+  <p class="muted">请返回修改新顺序号后重新预览；当前层位顺序未发生任何变化。</p>
+  <a class="btn" href="{{ url_for('routes.reorder_layers_form', grid_id=grid.id) }}">返回修改</a>
+</section>
+{% else %}
+<section class="card">
+  <h2>确认应用新顺序</h2>
+  <p class="hint">
+    确认后将<strong>一次性生效</strong>（同一事务，不会因顺序号唯一约束留下部分更新），
+    并在审计记录中留存每个层位变更前后的顺序。预览后若层位或覆盖关系发生变化，
+    本次提交将被拒绝并要求重新预览。
+  </p>
+  <form method="post" action="{{ url_for('routes.reorder_layers_commit', grid_id=grid.id) }}">
+    <input type="hidden" name="token" value="{{ token }}">
+    <input type="hidden" name="actor" value="{{ actor }}">
+    <div class="btn-row">
+      <button class="btn" type="submit"
+              onclick="return confirm('确认按预览一次性应用新发掘顺序？')">凭此预览提交应用</button>
+      <a class="btn btn-ghost" href="{{ url_for('routes.reorder_layers_form', grid_id=grid.id) }}">返回修改</a>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>新旧顺序对照（共 {{ preview.changes|length }} 个层位）</h2>
+  <table class="table">
+    <thead><tr><th>新顺序</th><th>层位编号</th><th>原顺序</th><th>变化</th><th>状态</th></tr></thead>
+    <tbody>
+    {% for c in preview.changes %}
+      <tr class="{% if c.changed %}row-changed{% endif %}">
+        <td class="mono strong">{{ c.new_seq }}</td>
+        <td class="mono">{{ c.code }}</td>
+        <td>{{ c.old_seq }}</td>
+        <td>
+          {% if c.changed %}<span class="tag tag-reorder">{{ c.old_seq }} → {{ c.new_seq }}</span>
+          {% else %}<span class="muted">不变</span>{% endif %}
+        </td>
+        <td><small class="muted">状态与遗物归属不变</small></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>受影响的覆盖关系（{{ preview.relations|length }}）</h2>
+  {% if preview.relations %}
+  <table class="table">
+    <thead><tr>
+      <th>覆盖方</th><th>原顺序</th><th>新顺序</th>
+      <th></th>
+      <th>被覆盖方</th><th>原顺序</th><th>新顺序</th><th>校验结果</th>
+    </tr></thead>
+    <tbody>
+    {% for r in preview.relations %}
+      <tr class="{% if r.conflict %}row-bad{% endif %}">
+        <td class="mono">{{ r.upper_code }}</td>
+        <td>{{ r.upper_old }}</td>
+        <td class="strong">{{ r.upper_new }}</td>
+        <td>→ 覆盖 →</td>
+        <td class="mono">{{ r.lower_code }}</td>
+        <td>{{ r.lower_old }}</td>
+        <td class="strong">{{ r.lower_new }}</td>
+        <td>
+          {% if r.conflict %}<span class="tag tag-closed">冲突：覆盖方顺序号 ≥ 被覆盖方</span>
+          {% else %}<span class="tag tag-open">仍合规</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">该探方暂无覆盖关系。</p>{% endif %}
+</section>
+{% endblock %}

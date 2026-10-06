@@ -118,6 +118,77 @@ def close_layer(layer_id: int):
     )
 
 
+# -------------------------------------------------------- 层位顺序整体调整
+
+def _parse_reorder_form(form):
+    """从表单解析 {层位编号: 新顺序号原始值}，字段形如 seq_<code>。"""
+    new_seq_by_code: dict[str, str] = {}
+    for key, value in form.items():
+        if key.startswith("seq_"):
+            new_seq_by_code[key[len("seq_"):]] = value
+    return new_seq_by_code
+
+
+@bp.route("/grids/<int:grid_id>/layers/reorder")
+def reorder_layers_form(grid_id: int):
+    conn = db.get_db()
+    grid = services.get_grid(conn, grid_id)
+    if grid is None:
+        flash("探方不存在。", "error")
+        return redirect(url_for("routes.index"))
+    layers = services.list_layers(conn, grid_id)
+    relations = services.list_relations(conn, grid_id)
+    return render_template(
+        "reorder_form.html", grid=grid, layers=layers, relations=relations,
+    )
+
+
+@bp.post("/grids/<int:grid_id>/layers/reorder/preview")
+def reorder_layers_preview(grid_id: int):
+    conn = db.get_db()
+    grid = services.get_grid(conn, grid_id)
+    if grid is None:
+        flash("探方不存在。", "error")
+        return redirect(url_for("routes.index"))
+
+    actor = _actor()
+    result = services.preview_reorder_layers(
+        conn, grid_id, _parse_reorder_form(request.form), actor,
+    )
+    if not result.ok:
+        # 输入类错误回到表单页；覆盖冲突渲染预览页展示全部冲突关系
+        if result.data.get("preview") is None:
+            flash(result.error, "error")
+            return redirect(url_for("routes.reorder_layers_form", grid_id=grid_id))
+        return render_template(
+            "reorder_preview.html", grid=grid,
+            preview=result.data["preview"], token=None,
+            error=result.error, conflict_path=result.conflict_path,
+            actor=actor,
+        )
+
+    return render_template(
+        "reorder_preview.html", grid=grid,
+        preview=result.data["preview"], token=result.data["token"],
+        error="", conflict_path="", actor=result.data.get("actor", ""),
+    )
+
+
+@bp.post("/grids/<int:grid_id>/layers/reorder/commit")
+def reorder_layers_commit(grid_id: int):
+    conn = db.get_db()
+    token = request.form.get("token", "")
+    result = services.commit_reorder_layers(conn, token, _actor())
+    if result.ok:
+        flash(
+            f"发掘顺序已整体生效，{result.data.get('changed_count', 0)} 个层位顺序变更。",
+            "success",
+        )
+        return redirect(url_for("routes.grid_detail", grid_id=grid_id))
+    flash(result.error, "error")
+    return redirect(url_for("routes.reorder_layers_form", grid_id=grid_id))
+
+
 # ---------------------------------------------------------------- 覆盖关系
 
 @bp.post("/grids/<int:grid_id>/relations")
@@ -277,6 +348,7 @@ def audit_view():
         ("create", "新建探方"),
         ("open_layer", "开放层位"),
         ("close_layer", "关闭层位"),
+        ("reorder_layers", "整体调整顺序"),
         ("add_relation", "登记/拒绝关系"),
         ("register_artifact", "登记/拒绝遗物"),
         ("save_draft", "保留草稿"),

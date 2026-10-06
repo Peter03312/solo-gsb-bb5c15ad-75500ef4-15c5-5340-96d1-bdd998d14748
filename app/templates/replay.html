@@ -38,10 +38,12 @@
     {% if current.actor %}<span class="muted">经办人：{{ current.actor }}</span>{% endif %}
     {% if current.conflict %}
     <div class="conflict-box">
+      {% if current.conflict_path %}
       <div class="conflict-title">冲突路径：</div>
       <div class="conflict-path">{{ current.conflict_path }}</div>
+      {% endif %}
       <div class="conflict-reason">{{ current.reason }}</div>
-      <div class="muted">该事件被拒绝，层位图状态不变，内容已保留为草稿。</div>
+      <div class="muted">该事件被拒绝，层位图状态不变。</div>
     </div>
     {% endif %}
     <div class="snap">

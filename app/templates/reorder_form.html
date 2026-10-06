@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ grid.code }} 调整发掘顺序 · 考古发掘层位记录系统{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <a class="back" href="{{ url_for('routes.grid_detail', grid_id=grid.id) }}">← 返回 {{ grid.code }} 层位图</a>
+    <h2>探方 {{ grid.code }} <small>层位发掘顺序整体调整</small></h2>
+  </div>
+</div>
+
+<section class="card">
+  <h2>第一步：录入每个现存层位的新顺序号</h2>
+  <p class="hint">
+    规则：① 必须为<strong>每个现存层位</strong>（含已关闭层位）都填写新顺序号，一个不能少；
+    ② 新顺序号为<strong>正整数且互不重复</strong>（可以整体改用 10、20、30…，不要求连续）；
+    ③ 提交前先生成预览，<strong>凭当次预览</strong>才能应用。
+    覆盖关系要求覆盖方（上层，先发掘）顺序号严格小于被覆盖方。
+  </p>
+  {% if layers %}
+  <form class="form-stack" method="post"
+        action="{{ url_for('routes.reorder_layers_preview', grid_id=grid.id) }}">
+    <table class="table">
+      <thead><tr><th>层位编号</th><th>当前顺序</th><th>状态</th><th>名称</th><th style="width:160px">新顺序号</th></tr></thead>
+      <tbody>
+      {% for l in layers %}
+        <tr>
+          <td class="mono strong">{{ l.code }}</td>
+          <td>{{ l.seq }}</td>
+          <td>
+            {% if l.status == 'open' %}<span class="tag tag-open">开放</span>
+            {% else %}<span class="tag tag-closed">已关闭</span>{% endif %}
+          </td>
+          <td>{{ l.name or '—' }}</td>
+          <td><input name="seq_{{ l.code }}" type="number" min="1" step="1" required value="{{ l.seq }}"></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <label>经办人 <input name="actor" placeholder="记录员姓名（可留空）" style="max-width:260px"></label>
+    <div class="btn-row">
+      <button class="btn" type="submit">生成预览（查看新旧顺序与受影响覆盖关系）</button>
+      <a class="btn btn-ghost" href="{{ url_for('routes.grid_detail', grid_id=grid.id) }}">取消</a>
+    </div>
+  </form>
+  {% else %}
+  <p class="empty">该探方暂无层位，无法调整顺序。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>当前覆盖关系（{{ relations|length }}）</h2>
+  {% if relations %}
+  <table class="table">
+    <thead><tr><th>覆盖方</th><th></th><th>被覆盖方</th><th>当前顺序校验</th></tr></thead>
+    <tbody>
+    {% for r in relations %}
+      <tr>
+        <td class="mono">{{ r.upper_code }}（顺序 {{ r.upper_seq }}）</td>
+        <td>→ 覆盖 →</td>
+        <td class="mono">{{ r.lower_code }}（顺序 {{ r.lower_seq }}）</td>
+        <td>
+          {% if r.upper_seq < r.lower_seq %}<span class="tag tag-open">合规</span>
+          {% else %}<span class="tag tag-closed">异常</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">尚无覆盖关系，新顺序只需满足编号覆盖与正整数互不重复。</p>{% endif %}
+</section>
+{% endblock %}

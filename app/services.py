@@ -25,8 +25,11 @@ class Result:
         return cls(True, id=id_, data=data)
 
     @classmethod
-    def failure(cls, error: str, conflict_path: str = "", draft_id: int | None = None) -> "Result":
-        return cls(False, error=error, conflict_path=conflict_path, draft_id=draft_id)
+    def failure(
+        cls, error: str, conflict_path: str = "", draft_id: int | None = None, **data
+    ) -> "Result":
+        return cls(False, error=error, conflict_path=conflict_path,
+                   draft_id=draft_id, data=data)
 
 
 # ---------------------------------------------------------------- 基础查询
@@ -161,6 +164,315 @@ def close_layer(conn, layer_id: int, actor: str = "") -> Result:
     )
     conn.commit()
     return Result.success(layer_id)
+
+
+# ---------------------------------------------------------------- 层位顺序整体调整
+
+# 预览令牌的有效期：预览后应尽快确认提交
+REORDER_TOKEN_MAX_AGE = 30 * 60
+
+
+def _reorder_serializer():
+    """预览令牌签名器（复用 Flask SECRET_KEY，不新增表、不依赖会话存储）。"""
+    from itsdangerous import URLSafeSerializer
+
+    from flask import current_app
+
+    return URLSafeSerializer(current_app.config["SECRET_KEY"], salt="layer-reorder-preview")
+
+
+def _layers_state_fingerprint(layers, relations) -> str:
+    """对影响覆盖关系校验的状态取指纹：层位集合（id/seq/status）与全部覆盖边。
+
+    预览与提交之间任一项发生变化（新增/关闭层位、顺序变化、关系增删等），
+    指纹即不同，旧预览令牌将被拒绝。
+    """
+    import hashlib
+
+    parts = [
+        ("layer", row["id"], row["seq"], row["status"])
+        for row in layers
+    ]
+    parts += [
+        ("rel", row["upper_id"], row["lower_id"])
+        for row in sorted(relations, key=lambda r: (r["upper_id"], r["lower_id"]))
+    ]
+    blob = json.dumps(parts, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _validate_reorder_input(conn, grid_id: int, new_seq_by_code: dict):
+    """解析并校验输入：编号恰好覆盖现存层位、顺序号为互不重复的正整数。
+
+    返回 (layers, code_to_new_seq, error)；error 非空表示校验失败。
+    """
+    layers = list_layers(conn, grid_id)
+    if not layers:
+        return layers, {}, "该探方暂无层位，无法调整顺序"
+
+    existing_codes = {row["code"] for row in layers}
+    submitted_codes = set(new_seq_by_code)
+
+    errors: list[str] = []
+    missing = existing_codes - submitted_codes
+    extra = submitted_codes - existing_codes
+    if missing:
+        errors.append("以下现存层位未提供新顺序号：" + "、".join(sorted(missing)))
+    if extra:
+        errors.append("以下编号不属于该探方现存层位：" + "、".join(sorted(extra)))
+
+    code_to_new_seq: dict[str, int] = {}
+    invalid: list[str] = []
+    for code in existing_codes & submitted_codes:
+        raw = new_seq_by_code[code]
+        try:
+            seq = int(raw)
+        except (TypeError, ValueError):
+            invalid.append(f"{code}（{raw!r} 不是整数）")
+            continue
+        if seq <= 0:
+            invalid.append(f"{code}（顺序号须为正整数）")
+            continue
+        code_to_new_seq[code] = seq
+    if invalid:
+        errors.append("新顺序号不合法：" + "、".join(invalid))
+
+    seen: dict[int, str] = {}
+    duplicates: set[str] = set()
+    for code, seq in code_to_new_seq.items():
+        if seq in seen:
+            duplicates.add(code)
+            duplicates.add(seen[seq])
+        else:
+            seen[seq] = code
+    if duplicates:
+        errors.append("新顺序号必须互不重复，重复占用：" + "、".join(sorted(duplicates)))
+
+    return layers, code_to_new_seq, "；".join(errors)
+
+
+def _build_reorder_preview(conn, grid_id: int, layers, code_to_new_seq: dict) -> dict:
+    """根据新顺序计算覆盖关系冲突与各层位变更前后顺序。"""
+    seq_by_id = {row["id"]: code_to_new_seq[row["code"]] for row in layers}
+    relations = list_relations(conn, grid_id)
+
+    relation_rows = []
+    conflicts = []
+    for rel in relations:
+        upper_new = seq_by_id[rel["upper_id"]]
+        lower_new = seq_by_id[rel["lower_id"]]
+        item = {
+            "upper_code": rel["upper_code"],
+            "lower_code": rel["lower_code"],
+            "upper_old": rel["upper_seq"],
+            "lower_old": rel["lower_seq"],
+            "upper_new": upper_new,
+            "lower_new": lower_new,
+            "conflict": upper_new >= lower_new,
+        }
+        relation_rows.append(item)
+        if item["conflict"]:
+            conflicts.append(item)
+
+    changes = [
+        {
+            "layer_id": row["id"],
+            "code": row["code"],
+            "old_seq": row["seq"],
+            "new_seq": code_to_new_seq[row["code"]],
+            "changed": row["seq"] != code_to_new_seq[row["code"]],
+        }
+        for row in layers
+    ]
+    changes.sort(key=lambda c: c["new_seq"])
+    return {
+        "relations": relation_rows,
+        "conflicts": conflicts,
+        "changes": changes,
+        "fingerprint": _layers_state_fingerprint(layers, relations),
+    }
+
+
+def preview_reorder_layers(
+    conn, grid_id: int, new_seq_by_code: dict, actor: str = "",
+) -> Result:
+    """预览层位顺序整体调整：展示新旧顺序与受影响覆盖关系。
+
+    不写库。通过全部校验且无覆盖冲突时，data 中返回签名令牌 token，
+    供 commit_reorder_layers 凭该次预览提交。
+    """
+    if get_grid(conn, grid_id) is None:
+        return Result.failure("探方不存在")
+
+    layers, code_to_new_seq, error = _validate_reorder_input(
+        conn, grid_id, new_seq_by_code
+    )
+    if error:
+        return Result.failure(error)
+
+    preview = _build_reorder_preview(conn, grid_id, layers, code_to_new_seq)
+    if preview["conflicts"]:
+        lines = [
+            f"{c['upper_code']}(新顺序 {c['upper_new']}) ✗ "
+            f"{c['lower_code']}(新顺序 {c['lower_new']})"
+            for c in preview["conflicts"]
+        ]
+        reason = (
+            "新顺序违反覆盖关系：覆盖方顺序号必须小于被覆盖方。冲突关系："
+            + "；".join(lines)
+        )
+        return Result.failure(
+            reason,
+            conflict_path="；".join(
+                f"{c['upper_code']}→{c['lower_code']}" for c in preview["conflicts"]
+            ),
+            preview=preview,
+            actor=actor.strip(),
+        )
+
+    token = _reorder_serializer().dumps(
+        {
+            "grid_id": grid_id,
+            "new_seq": {str(row["id"]): code_to_new_seq[row["code"]] for row in layers},
+            "fingerprint": preview["fingerprint"],
+        }
+    )
+    return Result.success(token=token, preview=preview, actor=actor.strip())
+
+
+def commit_reorder_layers(conn, token: str, actor: str = "") -> Result:
+    """凭一次有效预览一次性应用层位顺序调整。
+
+    - 令牌过期/被篡改/不属于该探方 → 拒绝；
+    - 预览后层位或覆盖关系发生变化（指纹不符）→ 拒绝并要求重新预览；
+    - 覆盖关系在当前数据下不再满足顺序约束 → 拒绝并要求重新预览。
+    通过时在单个事务内完成全部 seq 更新与审计写入，不会因唯一约束冲突留下部分更新。
+    """
+    grid_id = None
+    try:
+        payload = _reorder_serializer().loads(token, max_age=REORDER_TOKEN_MAX_AGE)
+        grid_id = payload.get("grid_id")
+        new_seq_raw = payload.get("new_seq")
+        fingerprint = payload.get("fingerprint")
+        if not isinstance(grid_id, int) or not isinstance(new_seq_raw, dict):
+            raise ValueError("令牌内容不完整")
+        new_seq_by_id = {int(k): int(v) for k, v in new_seq_raw.items()}
+    except Exception as exc:  # BadSignature / SignatureExpired / 内容异常
+        reason = f"预览令牌无效或已过期，请重新预览后再提交（{exc.__class__.__name__}）"
+        audit.log(
+            conn, "reorder_layers", "grid", None, None, actor, False,
+            f"顺序调整提交被拒绝：{reason}", {"reason": reason},
+        )
+        return Result.failure(reason)
+
+    grid = get_grid(conn, grid_id)
+    if grid is None:
+        return Result.failure("探方不存在")
+
+    layers = list_layers(conn, grid_id)
+    current_ids = {row["id"] for row in layers}
+    if set(new_seq_by_id) != current_ids:
+        reason = "预览后层位集合发生变化（有层位新增或删除），请重新预览后再提交"
+        audit.log(
+            conn, "reorder_layers", "grid", grid_id, grid_id, actor, False,
+            f"探方 {grid['code']} 顺序调整提交被拒绝：{reason}", {"reason": reason},
+        )
+        return Result.failure(reason, stale=True)
+    if len(set(new_seq_by_id.values())) != len(new_seq_by_id) or any(
+        v <= 0 for v in new_seq_by_id.values()
+    ):
+        reason = "新顺序号必须为互不重复的正整数，请重新预览"
+        audit.log(
+            conn, "reorder_layers", "grid", grid_id, grid_id, actor, False,
+            f"探方 {grid['code']} 顺序调整提交被拒绝：{reason}", {"reason": reason},
+        )
+        return Result.failure(reason, stale=True)
+
+    relations = list_relations(conn, grid_id)
+    if _layers_state_fingerprint(layers, relations) != fingerprint:
+        reason = "预览后层位或覆盖关系已发生变化，旧预览已失效，请重新预览后再提交"
+        audit.log(
+            conn, "reorder_layers", "grid", grid_id, grid_id, actor, False,
+            f"探方 {grid['code']} 顺序调整提交被拒绝：{reason}", {"reason": reason},
+        )
+        return Result.failure(reason, stale=True)
+
+    # 二次确认：覆盖方顺序号不得不小于被覆盖方
+    bad = [
+        rel for rel in relations
+        if new_seq_by_id[rel["upper_id"]] >= new_seq_by_id[rel["lower_id"]]
+    ]
+    if bad:
+        conflict_path = "；".join(
+            f"{rel['upper_code']}→{rel['lower_code']}" for rel in bad
+        )
+        reason = (
+            "当前覆盖关系在新顺序下存在冲突（覆盖方顺序号不小于被覆盖方），"
+            f"已禁止应用，请重新预览。冲突关系：{conflict_path}"
+        )
+        audit.log(
+            conn, "reorder_layers", "grid", grid_id, grid_id, actor, False,
+            f"探方 {grid['code']} 顺序调整提交被拒绝：{reason}",
+            {"reason": reason, "conflict_path": conflict_path},
+        )
+        return Result.failure(reason, conflict_path=conflict_path, stale=True)
+
+    changes = [
+        {
+            "layer_id": row["id"],
+            "code": row["code"],
+            "old_seq": row["seq"],
+            "new_seq": new_seq_by_id[row["id"]],
+            "changed": row["seq"] != new_seq_by_id[row["id"]],
+        }
+        for row in layers
+    ]
+    changed = [c for c in changes if c["changed"]]
+    changed.sort(key=lambda c: c["new_seq"])
+
+    ts = audit.now_ts()
+    try:
+        # 显式事务保证原子性：先结清连接上可能残留的隐式事务（正常流程中为空操作），
+        # 再显式开启；两阶段更新全部在同一事务内，最后一次 commit 原子提交。
+        # 先全部让出正整数序位，再写入新顺序，
+        # 避免互换（如 2↔3）时撞上 layers(grid_id, seq) 唯一约束。
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        for lid in new_seq_by_id:
+            conn.execute("UPDATE layers SET seq = ? WHERE id = ?", (-lid, lid))
+        for lid, new_seq in new_seq_by_id.items():
+            conn.execute("UPDATE layers SET seq = ? WHERE id = ?", (new_seq, lid))
+        conn.execute(
+            "UPDATE grids SET updated_at = ? WHERE id = ?", (ts, grid_id)
+        )
+        summary_changes = [
+            {"layer_id": c["layer_id"], "code": c["code"],
+             "old_seq": c["old_seq"], "new_seq": c["new_seq"]}
+            for c in changed
+        ]
+        audit.log(
+            conn, "reorder_layers", "grid", grid_id, grid_id, actor, True,
+            f"探方 {grid['code']} 整体调整发掘顺序：{len(changed)} 个层位顺序变更"
+            + ("（" + "，".join(f"{c['code']}:{c['old_seq']}→{c['new_seq']}" for c in changed) + "）"
+               if changed else ""),
+            {"changes": summary_changes,
+             "all_layers": [
+                 {"layer_id": c["layer_id"], "code": c["code"],
+                  "old_seq": c["old_seq"], "new_seq": c["new_seq"]}
+                 for c in changes]},
+            commit=False,
+        )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        audit.log(
+            conn, "reorder_layers", "grid", grid_id, grid_id, actor, False,
+            f"探方 {grid['code']} 顺序调整失败，已整体回滚：{exc}",
+            {"error": str(exc)},
+        )
+        return Result.failure(f"顺序调整失败，已整体回滚，未留下部分更新：{exc}")
+
+    return Result.success(grid_id, changes=changes, changed_count=len(changed))
 
 
 # ---------------------------------------------------------------- 覆盖关系

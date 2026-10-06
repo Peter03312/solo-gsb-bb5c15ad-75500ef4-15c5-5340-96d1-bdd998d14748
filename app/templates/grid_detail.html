@@ -8,6 +8,7 @@
     <h2>探方 {{ grid.code }} <small>{{ grid.site }}</small></h2>
   </div>
   <div class="actions">
+    <a class="btn btn-ghost" href="{{ url_for('routes.reorder_layers_form', grid_id=grid.id) }}">⇅ 整体调整发掘顺序</a>
     <a class="btn btn-ghost" href="{{ url_for('routes.replay', grid_id=grid.id) }}">▶ 按发掘顺序回放</a>
     <a class="btn btn-ghost" href="{{ url_for('routes.audit_view', grid_id=grid.id) }}">本探方审计</a>
   </div>

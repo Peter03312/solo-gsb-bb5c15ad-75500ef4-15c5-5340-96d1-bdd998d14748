@@ -12,6 +12,7 @@ ACTION_LABELS = {
     "create": "新建探方",
     "open_layer": "开放层位",
     "close_layer": "关闭层位",
+    "reorder_layers": "整体调整发掘顺序",
     "add_relation": "登记覆盖关系",
     "register_artifact": "登记遗物批次",
     "save_draft": "保留冲突草稿",
@@ -64,6 +65,29 @@ def replay_grid(conn, grid_id: int) -> dict:
                 closed_layers[lid] = {"id": lid, "seq": seq_by_id.get(lid)}
             title = f"关闭层位 {details.get('code', '')}（此后禁止补录遗物）"
             kind = "close"
+        elif row["action"] == "reorder_layers":
+            # 一次性整体改序：该事件之后的帧一律显示新顺序
+            layer_changes = details.get("changes") or []
+            for ch in layer_changes:
+                lid = ch.get("layer_id")
+                new_seq = ch.get("new_seq")
+                if lid is not None and new_seq is not None:
+                    seq_by_id[lid] = new_seq
+                    if lid in open_layers:
+                        open_layers[lid]["seq"] = new_seq
+                    if lid in closed_layers:
+                        closed_layers[lid]["seq"] = new_seq
+            if row["success"]:
+                desc = "，".join(
+                    f"{c.get('code')}:{c.get('old_seq')}→{c.get('new_seq')}"
+                    for c in layer_changes
+                )
+                title = f"整体调整发掘顺序：{desc}" if desc else "整体调整发掘顺序（无实际变化）"
+                kind = "reorder"
+            else:
+                conflict = True
+                title = "拒绝顺序调整：" + row["summary"]
+                kind = "conflict"
         elif row["action"] == "add_relation":
             uid, lid = details.get("upper_id"), details.get("lower_id")
             rel_id = details.get("relation_id")
